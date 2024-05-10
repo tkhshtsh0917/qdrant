@@ -239,6 +239,7 @@ impl Collection {
                 .expect("Can't load or initialize payload index schema"),
         );
 
+        log::debug!("shard_holder.load_shards: start");
         shard_holder
             .load_shards(
                 path,
@@ -256,6 +257,7 @@ impl Collection {
                 optimizer_cpu_budget.clone(),
             )
             .await;
+        log::debug!("shard_holder.load_shards: end");
 
         let locked_shard_holder = Arc::new(LockedShardHolder::new(shard_holder));
 
