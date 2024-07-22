@@ -1,6 +1,7 @@
 mod resharding;
 
 use std::collections::{HashMap, HashSet};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,6 +22,7 @@ use crate::collection::payload_index_schema::PayloadIndexSchema;
 use crate::common::validate_snapshot_archive::validate_open_snapshot_archive;
 use crate::config::{CollectionConfig, ShardingMethod};
 use crate::hash_ring::HashRing;
+use crate::operations::cluster_ops::ReshardingDirection;
 use crate::operations::shard_selector_internal::ShardSelectorInternal;
 use crate::operations::shared_storage_config::SharedStorageConfig;
 use crate::operations::snapshot_ops::SnapshotDescription;
@@ -195,8 +197,6 @@ impl ShardHolder {
     }
 
     fn rebuild_rings(&mut self) {
-        // TODO(resharding): Correctly rebuild resharding hashrings!
-
         let mut rings = HashMap::from([(None, HashRing::single())]);
         let ids_to_key = self.get_shard_id_to_key_mapping();
         for shard_id in self.shards.keys() {
@@ -205,6 +205,36 @@ impl ShardHolder {
                 .entry(shard_key)
                 .or_insert_with(HashRing::single)
                 .add(*shard_id);
+        }
+
+        // Restore resharding hash ring
+        // Only restore if sharding is active, and we haven't reached WriteHashRingCommitted yet
+        if let Some(state) = self.resharding_state.read().deref() {
+            if state.stage < ReshardStage::WriteHashRingCommitted {
+                let ring = rings
+                    .get_mut(&state.shard_key)
+                    .expect("must have hash ring for current resharding shard key");
+                match state.direction {
+                    // Start resharding up on hash ring, restore to before resharding, then start
+                    // - from: Single { all shards }
+                    // - to:   Resharding { old: all except new shard, new: all shards }
+                    ReshardingDirection::Up => {
+                        let removed = ring.remove(&state.shard_id);
+                        debug_assert!(
+                            removed,
+                            "expected to remove resharding shard from rebuilt hash ring"
+                        );
+                        ring.start_resharding(state.shard_id, state.direction);
+                    }
+
+                    // Start resharding down on hash ring
+                    // - from: Single { all shards }
+                    // - to:   Resharding { old: all shards, new: all except old shard }
+                    ReshardingDirection::Down => {
+                        ring.start_resharding(state.shard_id, state.direction);
+                    }
+                }
+            }
         }
 
         self.rings = rings;
