@@ -1,4 +1,5 @@
 mod collection_ops;
+mod facet;
 pub mod payload_index_schema;
 mod point_ops;
 pub mod query;
